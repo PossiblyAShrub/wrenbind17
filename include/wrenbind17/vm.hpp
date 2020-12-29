@@ -3,9 +3,11 @@
 #include "map.hpp"
 #include "module.hpp"
 #include "variable.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <unordered_map>
@@ -35,6 +37,11 @@ namespace wrenbind17 {
      * @ingroup wrenbind17
      */
     typedef std::function<std::string(const std::vector<std::string>& paths, const std::string& name)> LoadFileFn;
+
+    /**
+     * @ingroup wrenbind17
+     */
+    typedef std::function<std::string(const std::string& importer, const std::string& name)> ResolveModuleFn;
 
     /**
      * @ingroup wrenbind17
@@ -69,6 +76,7 @@ namespace wrenbind17 {
 
                 throw NotFound();
             };
+            data->resolveModuleFn = [](const std::string& importer, const std::string& name) -> std::string { return name; };
 
             wrenInitConfiguration(&data->config);
             data->config.initialHeapSize = initHeap;
@@ -176,6 +184,21 @@ namespace wrenbind17 {
                         break;
                 }
                 self.lastError += ss.str();
+            };
+            data->config.resolveModuleFn = [](WrenVM* vm, const char* importer, const char* name) -> const char* {
+                auto& self = *reinterpret_cast<VM::Data*>(wrenGetUserData(vm));
+                try
+                {
+                    auto path = self.resolveModuleFn(importer, name);
+                    auto* buffer = new char[path.length() + 1];
+                    memcpy(buffer, path.c_str(), path.length() + 1 * sizeof(char));
+                    return buffer;
+                }
+                catch (const std::exception& e)
+                {
+                    (void)e;
+                    return NULL;
+                }
             };
 
             data->vm = std::shared_ptr<WrenVM>(wrenNewVM(&data->config), [](WrenVM* ptr) { wrenFreeVM(ptr); });
@@ -324,6 +347,18 @@ namespace wrenbind17 {
         }
 
         /*!
+         * @brief Set a custom module path resolution function for imports
+         * @see ResolveModuleFn
+         * @details This must be a function that accepts an importer string
+         * (which is the path from the importing module) and the name of the import
+         * as the second parameter. You must return the resolved module name from this custom function.
+         * If you want to cancel the import, simply throw an exception.
+         */
+        inline void setResolveModuleFunc(const ResolveModuleFn& fn) {
+            data->resolveModuleFn = fn;
+        }
+
+        /*!
          * @brief Runs the garbage collector
          */
         inline void gc() {
@@ -343,6 +378,7 @@ namespace wrenbind17 {
             std::string nextError;
             PrintFn printFn;
             LoadFileFn loadFileFn;
+            ResolveModuleFn resolveModuleFn;
 
             inline void addClassType(const std::string& module, const std::string& name, const size_t hash) {
                 classToModule.insert(std::make_pair(hash, module));
